@@ -21,6 +21,8 @@ import com.magnetpulse.app.service.TorrentForegroundService
 import com.magnetpulse.app.ui.MagnetPulseScreen
 import com.magnetpulse.app.ui.theme.MagnetPulseTheme
 
+import uniffi.magnetpulse_core.EnginePolicy
+
 class MainActivity : ComponentActivity() {
 
     private var boundService by mutableStateOf<TorrentForegroundService?>(null)
@@ -54,15 +56,34 @@ class MainActivity : ComponentActivity() {
                 val svc = boundService
                 val tasks by (svc?.tasks ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
                 val totalDown by (svc?.totalDownBps ?: kotlinx.coroutines.flow.MutableStateFlow(0L)).collectAsState()
+                val totalUp by (svc?.totalUpBps ?: kotlinx.coroutines.flow.MutableStateFlow(0L)).collectAsState()
                 val engineError by (svc?.engineError ?: kotlinx.coroutines.flow.MutableStateFlow<String?>(null)).collectAsState()
+                val policy by (svc?.policy ?: kotlinx.coroutines.flow.MutableStateFlow(
+                    EnginePolicy(
+                        maxConcurrentDownloads = 3u,
+                        globalDownloadLimitKbps = 0u,
+                        globalUploadLimitKbps = 0u,
+                        wifiOnly = true,
+                        chargingOnly = false,
+                        fastresumeEnabled = true
+                    )
+                )).collectAsState()
 
                 MagnetPulseScreen(
                     tasks = tasks,
                     totalDownBps = totalDown,
+                    totalUpBps = totalUp,
+                    policy = policy,
                     engineError = engineError,
-                    onAddMagnet = { uri -> svc?.addMagnet(uri) },
+                    onAddMagnet = { uri, startPaused -> svc?.addMagnet(uri, null, startPaused) },
                     onPauseTask = { id -> svc?.pauseTask(id) },
-                    onResumeTask = { id -> svc?.resumeTask(id) }
+                    onResumeTask = { id -> svc?.resumeTask(id) },
+                    onPauseAll = { svc?.pauseAll() },
+                    onResumeAll = { svc?.resumeAll() },
+                    onRemoveTask = { id, deleteFiles -> svc?.removeTask(id, deleteFiles) },
+                    onUpdateOnlyFiles = { id, files -> svc?.updateOnlyFiles(id, files) },
+                    onSetTaskRateLimit = { id, downKbps, upKbps -> svc?.setTaskRateLimit(id, downKbps, upKbps) },
+                    onUpdatePolicy = { updated -> svc?.updatePolicy(updated) }
                 )
             }
         }

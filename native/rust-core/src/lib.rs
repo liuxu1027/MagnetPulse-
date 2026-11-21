@@ -149,10 +149,22 @@ impl MagnetEngine {
                 })?,
         );
 
+        let persistence_path = PathBuf::from(&persistence_dir);
+        let cache_dir = persistence_path.join("dht_cache");
+        let _ = std::fs::create_dir_all(&persistence_path);
+        let _ = std::fs::create_dir_all(&cache_dir);
+
+        // Android app processes have no HOME or XDG_* environment variables by default,
+        // causing librqbit's persistent DHT directory lookup (`directories::ProjectDirs`) to fail.
+        std::env::set_var("HOME", &persistence_path);
+        std::env::set_var("XDG_CACHE_HOME", &cache_dir);
+        std::env::set_var("XDG_CONFIG_HOME", &cache_dir);
+        std::env::set_var("XDG_DATA_HOME", &cache_dir);
+
         let mut opts = SessionOptions::default();
         opts.fastresume = initial_policy.fastresume_enabled;
         opts.persistence = Some(SessionPersistenceConfig::Json {
-            folder: Some(PathBuf::from(persistence_dir)),
+            folder: Some(persistence_path),
         });
         opts.ratelimits = Self::build_limits(
             initial_policy.global_download_limit_kbps,
@@ -162,7 +174,7 @@ impl MagnetEngine {
         let session = runtime
             .block_on(Session::new_with_opts(PathBuf::from(download_dir), opts))
             .map_err(|e| EngineError::InitializationFailed {
-                reason: e.to_string(),
+                reason: format!("{e:#}"),
             })?;
 
         let engine = Self {
@@ -438,6 +450,14 @@ impl MagnetEngine {
         handle: &Arc<ManagedTorrent>,
         meta: Option<&TaskMetadata>,
     ) -> TorrentSnapshot {
+        Self::build_snapshot_inner(id, handle, meta)
+    }
+
+    fn build_snapshot_inner(
+        id: usize,
+        handle: &Arc<ManagedTorrent>,
+        meta: Option<&TaskMetadata>,
+    ) -> TorrentSnapshot {
         let stats = handle.stats();
         let live = stats.live.as_ref();
 
@@ -538,7 +558,6 @@ impl MagnetEngine {
                         .into_iter()
                         .map(|(id, handle)| {
                             let stats = handle.stats();
-                            let live = stats.live.as_ref();
                             let mut meta = meta_guard.get_mut(&id);
                             let completed_now = if stats.finished {
                                 if let Some(m) = meta.as_deref_mut() {
@@ -565,52 +584,7 @@ impl MagnetEngine {
                             }
 
                             let _ = (&policy, &env);
-                            TorrentSnapshot {
-                                id: id as u32,
-                                info_hash: format!("{:?}", handle.info_hash()),
-                                name: handle
-                                    .name()
-                                    .unwrap_or_else(|| format!("Torrent #{id}")),
-                                magnet_uri: meta
-                                    .as_ref()
-                                    .map(|m| m.magnet_uri.clone())
-                                    .unwrap_or_default(),
-                                state: if stats.finished {
-                                    TaskState::Completed
-                                } else {
-                                    match stats.state {
-                                        TorrentStatsState::Initializing => TaskState::Resolving,
-                                        TorrentStatsState::Paused => TaskState::Paused,
-                                        TorrentStatsState::Live => TaskState::Downloading,
-                                        TorrentStatsState::Error => TaskState::Error,
-                                    }
-                                },
-                                total_bytes: stats.total_bytes,
-                                downloaded_bytes: stats.progress_bytes,
-                                uploaded_bytes: stats.uploaded_bytes,
-                                download_bps: live
-                                    .map(|l| (l.download_speed.mbps * 125_000.0) as u64)
-                                    .unwrap_or(0),
-                                upload_bps: live
-                                    .map(|l| (l.upload_speed.mbps * 125_000.0) as u64)
-                                    .unwrap_or(0),
-                                active_peers: live
-                                    .map(|l| l.snapshot.peer_stats.live as u32)
-                                    .unwrap_or(0),
-                                eta_seconds: None,
-                                download_limit_kbps: meta
-                                    .as_ref()
-                                    .map(|m| m.download_limit_kbps)
-                                    .unwrap_or(0),
-                                upload_limit_kbps: meta
-                                    .as_ref()
-                                    .map(|m| m.upload_limit_kbps)
-                                    .unwrap_or(0),
-                                files: Vec::new(),
-                                peers: Vec::new(),
-                                trackers: Vec::new(),
-                                error_message: stats.error,
-                            }
+                            Self::build_snapshot_inner(id, &handle, meta.as_deref())
                         })
                         .collect()
                 };

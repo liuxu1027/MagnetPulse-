@@ -65,6 +65,18 @@ class TorrentForegroundService : Service() {
     private val _engineError = MutableStateFlow<String?>(null)
     val engineError: StateFlow<String?> = _engineError.asStateFlow()
 
+    private val _policy = MutableStateFlow(
+        EnginePolicy(
+            maxConcurrentDownloads = 3u,
+            globalDownloadLimitKbps = 0u,
+            globalUploadLimitKbps = 0u,
+            wifiOnly = true,
+            chargingOnly = false,
+            fastresumeEnabled = true
+        )
+    )
+    val policy: StateFlow<EnginePolicy> = _policy.asStateFlow()
+
     override fun onCreate() {
         super.onCreate()
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -85,14 +97,7 @@ class TorrentForegroundService : Service() {
             val created = MagnetEngine(
                 downloadDir = downloadDir.absolutePath,
                 persistenceDir = persistenceDir.absolutePath,
-                initialPolicy = EnginePolicy(
-                    maxConcurrentDownloads = 3u,
-                    globalDownloadLimitKbps = 0u,
-                    globalUploadLimitKbps = 0u,
-                    wifiOnly = true,
-                    chargingOnly = false,
-                    fastresumeEnabled = true
-                )
+                initialPolicy = _policy.value
             )
 
             created.registerCallback(object : ProgressCallback {
@@ -120,6 +125,7 @@ class TorrentForegroundService : Service() {
             })
 
             engine = created
+            _tasks.value = runCatching { created.listTasks() }.getOrDefault(emptyList())
             _engineError.value = null
 
             val monitor = NetworkPolicyMonitor(this) { isWifi, isCharging ->
@@ -136,8 +142,8 @@ class TorrentForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PAUSE_ALL -> serviceScope.launch { runCatching { engine?.pauseAll() } }
-            ACTION_RESUME_ALL -> serviceScope.launch { runCatching { engine?.resumeAll() } }
+            ACTION_PAUSE_ALL -> pauseAll()
+            ACTION_RESUME_ALL -> resumeAll()
             ACTION_STOP_SERVICE -> {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -154,9 +160,9 @@ class TorrentForegroundService : Service() {
         super.onDestroy()
     }
 
-    fun addMagnet(uri: String, onlyFiles: List<UInt>? = null) {
+    fun addMagnet(uri: String, onlyFiles: List<UInt>? = null, startPaused: Boolean = false) {
         serviceScope.launch {
-            runCatching { engine?.addMagnet(uri, onlyFiles, false) }
+            runCatching { engine?.addMagnet(uri, onlyFiles, startPaused) }
                 .onFailure { _engineError.value = it.message ?: "Failed to add magnet" }
         }
     }
@@ -175,6 +181,34 @@ class TorrentForegroundService : Service() {
         }
     }
 
+    fun pauseAll() {
+        serviceScope.launch {
+            runCatching { engine?.pauseAll() }
+                .onFailure { _engineError.value = it.message }
+        }
+    }
+
+    fun resumeAll() {
+        serviceScope.launch {
+            runCatching { engine?.resumeAll() }
+                .onFailure { _engineError.value = it.message }
+        }
+    }
+
+    fun removeTask(id: UInt, deleteFiles: Boolean = false) {
+        serviceScope.launch {
+            runCatching { engine?.removeTask(id, deleteFiles) }
+                .onFailure { _engineError.value = it.message }
+        }
+    }
+
+    fun setTaskRateLimit(id: UInt, downloadKbps: UInt, uploadKbps: UInt) {
+        serviceScope.launch {
+            runCatching { engine?.setTaskRateLimit(id, downloadKbps, uploadKbps) }
+                .onFailure { _engineError.value = it.message }
+        }
+    }
+
     fun updateOnlyFiles(id: UInt, files: List<UInt>) {
         serviceScope.launch {
             runCatching { engine?.updateOnlyFiles(id, files) }
@@ -183,6 +217,7 @@ class TorrentForegroundService : Service() {
     }
 
     fun updatePolicy(policy: EnginePolicy) {
+        _policy.value = policy
         serviceScope.launch {
             runCatching { engine?.updatePolicy(policy) }
                 .onFailure { _engineError.value = it.message }
