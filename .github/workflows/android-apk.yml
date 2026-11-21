@@ -55,3 +55,10 @@ jobs:
         with:
           name: MagnetPulse-Android-Debug-APK
           path: native/android-app/app/build/outputs/apk/debug/*.apk
+      - name: Upload Rust Prebuilt (.so & Kotlin Bindings)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MagnetPulse-Rust-Prebuilt
+          path: |
+            native/android-app/app/src/main/jniLibs
+            native/android-app/app/src/main/java/uniffi
