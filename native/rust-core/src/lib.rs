@@ -322,7 +322,7 @@ impl MagnetEngine {
     pub fn remove_task(&self, id: u32, delete_files: bool) -> Result<(), EngineError> {
         self.metadata.lock().remove(&(id as usize));
         self.runtime
-            .block_on(self.session.delete(id.into(), delete_files))
+            .block_on(self.session.delete((id as usize).into(), delete_files))
             .map_err(|e| EngineError::InternalError(e.to_string()))
     }
 
