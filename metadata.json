@@ -1,0 +1,8 @@
+{
+  "name": "MagnetPulse",
+  "description": "基于 librqbit 的高效跨平台磁力链接下载工具与原生安卓应用控制端，支持断点续传、多任务队列与前台服务通知。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

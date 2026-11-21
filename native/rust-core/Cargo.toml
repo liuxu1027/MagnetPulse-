@@ -1,0 +1,25 @@
+[package]
+name = "magnetpulse_core"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform magnet download core powered by librqbit with UniFFI bindings"
+
+[lib]
+name = "magnetpulse_core"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+
+[dependencies]
+anyhow = "1.0"
+librqbit = "8.1"
+parking_lot = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.43", features = ["full"] }
+uniffi = { version = "0.28", features = ["cli"] }
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }

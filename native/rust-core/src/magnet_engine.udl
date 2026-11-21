@@ -1,0 +1,116 @@
+namespace magnetpulse_core {
+    [Error]
+    enum EngineError {
+        "InitializationFailed",
+        "InvalidMagnetUri",
+        "TorrentNotFound",
+        "IoFailure",
+        "InternalError"
+    };
+
+    enum TaskState {
+        "Resolving",
+        "Queued",
+        "Downloading",
+        "Paused",
+        "PolicyPaused",
+        "Seeding",
+        "Completed",
+        "Error"
+    };
+
+    dictionary FileEntry {
+        u32 index;
+        string path;
+        u64 length;
+        u64 downloaded_bytes;
+        boolean selected;
+    };
+
+    dictionary PeerSnapshot {
+        string addr;
+        string client_name;
+        u64 download_bps;
+        u64 upload_bps;
+        f32 progress_ratio;
+    };
+
+    dictionary TrackerSnapshot {
+        string url;
+        string status;
+        u32 peers_found;
+    };
+
+    dictionary TorrentSnapshot {
+        u32 id;
+        string info_hash;
+        string name;
+        string magnet_uri;
+        TaskState state;
+        u64 total_bytes;
+        u64 downloaded_bytes;
+        u64 uploaded_bytes;
+        u64 download_bps;
+        u64 upload_bps;
+        u32 active_peers;
+        u64? eta_seconds;
+        u32 download_limit_kbps;
+        u32 upload_limit_kbps;
+        sequence<FileEntry> files;
+        sequence<PeerSnapshot> peers;
+        sequence<TrackerSnapshot> trackers;
+        string? error_message;
+    };
+
+    dictionary EnginePolicy {
+        u32 max_concurrent_downloads;
+        u32 global_download_limit_kbps;
+        u32 global_upload_limit_kbps;
+        boolean wifi_only;
+        boolean charging_only;
+        boolean fastresume_enabled;
+    };
+
+    callback interface ProgressCallback {
+        void on_snapshot_updated(sequence<TorrentSnapshot> tasks, u64 total_down_bps, u64 total_up_bps);
+        void on_task_completed(u32 id, string name);
+        void on_task_error(u32 id, string message);
+    };
+
+    interface MagnetEngine {
+        [Throws=EngineError]
+        constructor(string download_dir, string persistence_dir, EnginePolicy initial_policy);
+
+        void register_callback(ProgressCallback callback);
+
+        [Throws=EngineError]
+        u32 add_magnet(string magnet_uri, sequence<u32>? only_files, boolean start_paused);
+
+        [Throws=EngineError]
+        void pause_task(u32 id);
+
+        [Throws=EngineError]
+        void resume_task(u32 id);
+
+        [Throws=EngineError]
+        void pause_all();
+
+        [Throws=EngineError]
+        void resume_all();
+
+        [Throws=EngineError]
+        void update_only_files(u32 id, sequence<u32> file_indices);
+
+        [Throws=EngineError]
+        void set_task_rate_limit(u32 id, u32 download_kbps, u32 upload_kbps);
+
+        [Throws=EngineError]
+        void remove_task(u32 id, boolean delete_files);
+
+        void update_policy(EnginePolicy policy);
+
+        void apply_network_environment(boolean is_wifi, boolean is_charging);
+
+        sequence<TorrentSnapshot> list_tasks();
+    };
+};
