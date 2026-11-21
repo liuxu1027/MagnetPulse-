@@ -539,7 +539,7 @@ impl MagnetEngine {
                         .map(|(id, handle)| {
                             let stats = handle.stats();
                             let live = stats.live.as_ref();
-                            let meta = meta_guard.get_mut(&id);
+                            let mut meta = meta_guard.get_mut(&id);
                             let completed_now = if stats.finished {
                                 if let Some(m) = meta.as_deref_mut() {
                                     if !m.completed_notified {
