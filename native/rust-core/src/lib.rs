@@ -16,16 +16,16 @@ uniffi::include_scaffolding!("magnet_engine");
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("Failed to initialize librqbit session: {0}")]
-    InitializationFailed(String),
-    #[error("Invalid magnet URI: {0}")]
-    InvalidMagnetUri(String),
+    #[error("Failed to initialize librqbit session: {reason}")]
+    InitializationFailed { reason: String },
+    #[error("Invalid magnet URI: {reason}")]
+    InvalidMagnetUri { reason: String },
     #[error("Torrent task not found")]
     TorrentNotFound,
-    #[error("I/O failure: {0}")]
-    IoFailure(String),
-    #[error("Internal error: {0}")]
-    InternalError(String),
+    #[error("I/O failure: {reason}")]
+    IoFailure { reason: String },
+    #[error("Internal error: {reason}")]
+    InternalError { reason: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,7 +144,9 @@ impl MagnetEngine {
                 .enable_all()
                 .worker_threads(4)
                 .build()
-                .map_err(|e| EngineError::InitializationFailed(e.to_string()))?,
+                .map_err(|e| EngineError::InitializationFailed {
+                    reason: e.to_string(),
+                })?,
         );
 
         let mut opts = SessionOptions::default();
@@ -159,7 +161,9 @@ impl MagnetEngine {
 
         let session = runtime
             .block_on(Session::new_with_opts(PathBuf::from(download_dir), opts))
-            .map_err(|e| EngineError::InitializationFailed(e.to_string()))?;
+            .map_err(|e| EngineError::InitializationFailed {
+                reason: e.to_string(),
+            })?;
 
         let engine = Self {
             runtime,
@@ -195,9 +199,9 @@ impl MagnetEngine {
         start_paused: bool,
     ) -> Result<u32, EngineError> {
         if !magnet_uri.trim().starts_with("magnet:?") {
-            return Err(EngineError::InvalidMagnetUri(
-                "URI must begin with magnet:?".to_string(),
-            ));
+            return Err(EngineError::InvalidMagnetUri {
+                reason: "URI must begin with magnet:?".to_string(),
+            });
         }
 
         let only_files_usize: Option<Vec<usize>> = only_files
@@ -221,14 +225,16 @@ impl MagnetEngine {
                 self.session
                     .add_torrent(AddTorrent::from_url(&magnet_uri), Some(add_opts)),
             )
-            .map_err(|e| EngineError::InternalError(e.to_string()))?;
+            .map_err(|e| EngineError::InternalError {
+                reason: e.to_string(),
+            })?;
 
         let id = match response {
             AddTorrentResponse::Added(id, _) | AddTorrentResponse::AlreadyManaged(id, _) => id,
             AddTorrentResponse::ListOnly(_) => {
-                return Err(EngineError::InternalError(
-                    "Unexpected list-only response".to_string(),
-                ))
+                return Err(EngineError::InternalError {
+                    reason: "Unexpected list-only response".to_string(),
+                })
             }
         };
 
@@ -261,7 +267,9 @@ impl MagnetEngine {
         }
         self.runtime
             .block_on(self.session.pause(&handle))
-            .map_err(|e| EngineError::InternalError(e.to_string()))?;
+            .map_err(|e| EngineError::InternalError {
+                reason: e.to_string(),
+            })?;
         self.reconcile_queue_and_policy();
         Ok(())
     }
@@ -302,7 +310,9 @@ impl MagnetEngine {
         }
         self.runtime
             .block_on(self.session.update_only_files(&handle, &indices))
-            .map_err(|e| EngineError::InternalError(e.to_string()))
+            .map_err(|e| EngineError::InternalError {
+                reason: e.to_string(),
+            })
     }
 
     pub fn set_task_rate_limit(
@@ -323,7 +333,9 @@ impl MagnetEngine {
         self.metadata.lock().remove(&(id as usize));
         self.runtime
             .block_on(self.session.delete((id as usize).into(), delete_files))
-            .map_err(|e| EngineError::InternalError(e.to_string()))
+            .map_err(|e| EngineError::InternalError {
+                reason: e.to_string(),
+            })
     }
 
     pub fn update_policy(&self, policy: EnginePolicy) {
@@ -462,8 +474,8 @@ impl MagnetEngine {
 
         let files = handle
             .with_metadata(|m| {
-                m.info
-                    .iter_file_details()
+                m.file_infos
+                    .iter()
                     .enumerate()
                     .map(|(idx, f)| {
                         let selected = meta
@@ -472,7 +484,7 @@ impl MagnetEngine {
                             .unwrap_or(true);
                         FileEntry {
                             index: idx as u32,
-                            path: f.filename.to_string_lossy().to_string(),
+                            path: f.relative_filename.to_string_lossy().to_string(),
                             length: f.len,
                             downloaded_bytes: stats.file_progress.get(idx).copied().unwrap_or(0),
                             selected,
@@ -517,88 +529,90 @@ impl MagnetEngine {
             let mut interval = tokio::time::interval(Duration::from_millis(900));
             loop {
                 interval.tick().await;
+                let handles: Vec<(usize, Arc<ManagedTorrent>)> = session
+                    .with_torrents(|torrents| torrents.map(|(id, h)| (id, h.clone())).collect());
+
                 let snapshots: Vec<TorrentSnapshot> = {
                     let mut meta_guard = metadata.lock();
-                    session.with_torrents(|torrents| {
-                        torrents
-                            .map(|(id, handle)| {
-                                let stats = handle.stats();
-                                let live = stats.live.as_ref();
-                                let meta = meta_guard.get_mut(&id);
-                                let completed_now = if stats.finished {
-                                    if let Some(m) = meta.as_deref_mut() {
-                                        if !m.completed_notified {
-                                            m.completed_notified = true;
-                                            true
-                                        } else {
-                                            false
-                                        }
+                    handles
+                        .into_iter()
+                        .map(|(id, handle)| {
+                            let stats = handle.stats();
+                            let live = stats.live.as_ref();
+                            let meta = meta_guard.get_mut(&id);
+                            let completed_now = if stats.finished {
+                                if let Some(m) = meta.as_deref_mut() {
+                                    if !m.completed_notified {
+                                        m.completed_notified = true;
+                                        true
                                     } else {
                                         false
                                     }
                                 } else {
                                     false
-                                };
+                                }
+                            } else {
+                                false
+                            };
 
-                                if completed_now {
-                                    if let Some(cb) = callback.lock().as_ref() {
-                                        cb.on_task_completed(
-                                            id as u32,
-                                            handle.name().unwrap_or_default(),
-                                        );
+                            if completed_now {
+                                if let Some(cb) = callback.lock().as_ref() {
+                                    cb.on_task_completed(
+                                        id as u32,
+                                        handle.name().unwrap_or_default(),
+                                    );
+                                }
+                            }
+
+                            let _ = (&policy, &env);
+                            TorrentSnapshot {
+                                id: id as u32,
+                                info_hash: format!("{:?}", handle.info_hash()),
+                                name: handle
+                                    .name()
+                                    .unwrap_or_else(|| format!("Torrent #{id}")),
+                                magnet_uri: meta
+                                    .as_ref()
+                                    .map(|m| m.magnet_uri.clone())
+                                    .unwrap_or_default(),
+                                state: if stats.finished {
+                                    TaskState::Completed
+                                } else {
+                                    match stats.state {
+                                        TorrentStatsState::Initializing => TaskState::Resolving,
+                                        TorrentStatsState::Paused => TaskState::Paused,
+                                        TorrentStatsState::Live => TaskState::Downloading,
+                                        TorrentStatsState::Error => TaskState::Error,
                                     }
-                                }
-
-                                let _ = (&policy, &env);
-                                TorrentSnapshot {
-                                    id: id as u32,
-                                    info_hash: format!("{:?}", handle.info_hash()),
-                                    name: handle
-                                        .name()
-                                        .unwrap_or_else(|| format!("Torrent #{id}")),
-                                    magnet_uri: meta
-                                        .as_ref()
-                                        .map(|m| m.magnet_uri.clone())
-                                        .unwrap_or_default(),
-                                    state: if stats.finished {
-                                        TaskState::Completed
-                                    } else {
-                                        match stats.state {
-                                            TorrentStatsState::Initializing => TaskState::Resolving,
-                                            TorrentStatsState::Paused => TaskState::Paused,
-                                            TorrentStatsState::Live => TaskState::Downloading,
-                                            TorrentStatsState::Error => TaskState::Error,
-                                        }
-                                    },
-                                    total_bytes: stats.total_bytes,
-                                    downloaded_bytes: stats.progress_bytes,
-                                    uploaded_bytes: stats.uploaded_bytes,
-                                    download_bps: live
-                                        .map(|l| (l.download_speed.mbps * 125_000.0) as u64)
-                                        .unwrap_or(0),
-                                    upload_bps: live
-                                        .map(|l| (l.upload_speed.mbps * 125_000.0) as u64)
-                                        .unwrap_or(0),
-                                    active_peers: live
-                                        .map(|l| l.snapshot.peer_stats.live as u32)
-                                        .unwrap_or(0),
-                                    eta_seconds: None,
-                                    download_limit_kbps: meta
-                                        .as_ref()
-                                        .map(|m| m.download_limit_kbps)
-                                        .unwrap_or(0),
-                                    upload_limit_kbps: meta
-                                        .as_ref()
-                                        .map(|m| m.upload_limit_kbps)
-                                        .unwrap_or(0),
-                                    files: Vec::new(),
-                                    peers: Vec::new(),
-                                    trackers: Vec::new(),
-                                    error_message: stats.error,
-                                }
-                            })
-                            .collect()
-                    })
+                                },
+                                total_bytes: stats.total_bytes,
+                                downloaded_bytes: stats.progress_bytes,
+                                uploaded_bytes: stats.uploaded_bytes,
+                                download_bps: live
+                                    .map(|l| (l.download_speed.mbps * 125_000.0) as u64)
+                                    .unwrap_or(0),
+                                upload_bps: live
+                                    .map(|l| (l.upload_speed.mbps * 125_000.0) as u64)
+                                    .unwrap_or(0),
+                                active_peers: live
+                                    .map(|l| l.snapshot.peer_stats.live as u32)
+                                    .unwrap_or(0),
+                                eta_seconds: None,
+                                download_limit_kbps: meta
+                                    .as_ref()
+                                    .map(|m| m.download_limit_kbps)
+                                    .unwrap_or(0),
+                                upload_limit_kbps: meta
+                                    .as_ref()
+                                    .map(|m| m.upload_limit_kbps)
+                                    .unwrap_or(0),
+                                files: Vec::new(),
+                                peers: Vec::new(),
+                                trackers: Vec::new(),
+                                error_message: stats.error,
+                            }
+                        })
+                        .collect()
                 };
 
                 let total_down: u64 = snapshots.iter().map(|s| s.download_bps).sum();
