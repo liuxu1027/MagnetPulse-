@@ -51,6 +51,7 @@ import uniffi.magnetpulse_core.TorrentSnapshot
 fun MagnetPulseScreen(
     tasks: List<TorrentSnapshot>,
     totalDownBps: Long,
+    engineError: String? = null,
     onAddMagnet: (String) -> Unit,
     onPauseTask: (UInt) -> Unit,
     onResumeTask: (UInt) -> Unit
@@ -96,6 +97,19 @@ fun MagnetPulseScreen(
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (engineError != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "引擎状态异常：$engineError",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f))
+                        .padding(12.dp)
+                )
+            }
             Spacer(modifier = Modifier.height(12.dp))
 
             LazyColumn(

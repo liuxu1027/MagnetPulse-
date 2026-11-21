@@ -5,7 +5,7 @@ edition = "2021"
 description = "Cross-platform magnet download core powered by librqbit with UniFFI bindings"
 
 [lib]
-name = "magnetpulse_core"
+name = "uniffi_magnetpulse_core"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [[bin]]

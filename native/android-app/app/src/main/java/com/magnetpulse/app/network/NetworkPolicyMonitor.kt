@@ -51,7 +51,12 @@ class NetworkPolicyMonitor(
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
         }
-        context.registerReceiver(powerReceiver, filter)
+        androidx.core.content.ContextCompat.registerReceiver(
+            context,
+            powerReceiver,
+            filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         onEnvironmentChanged(currentWifi, currentCharging)
     }
 

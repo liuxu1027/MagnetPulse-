@@ -54,10 +54,12 @@ class MainActivity : ComponentActivity() {
                 val svc = boundService
                 val tasks by (svc?.tasks ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
                 val totalDown by (svc?.totalDownBps ?: kotlinx.coroutines.flow.MutableStateFlow(0L)).collectAsState()
+                val engineError by (svc?.engineError ?: kotlinx.coroutines.flow.MutableStateFlow<String?>(null)).collectAsState()
 
                 MagnetPulseScreen(
                     tasks = tasks,
                     totalDownBps = totalDown,
+                    engineError = engineError,
                     onAddMagnet = { uri -> svc?.addMagnet(uri) },
                     onPauseTask = { id -> svc?.pauseTask(id) },
                     onResumeTask = { id -> svc?.resumeTask(id) }
