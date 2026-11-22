@@ -18,9 +18,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import uniffi.magnetpulse_core.EnginePolicy
 import uniffi.magnetpulse_core.MagnetEngine
@@ -28,6 +30,8 @@ import uniffi.magnetpulse_core.ProgressCallback
 import uniffi.magnetpulse_core.TaskState
 import uniffi.magnetpulse_core.TorrentSnapshot
 import java.io.File
+import java.net.URLDecoder
+import java.util.concurrent.atomic.AtomicInteger
 
 class TorrentForegroundService : Service() {
 
@@ -52,6 +56,10 @@ class TorrentForegroundService : Service() {
     private var engine: MagnetEngine? = null
     private var networkMonitor: NetworkPolicyMonitor? = null
     private lateinit var notificationManager: NotificationManager
+
+    private val _engineTasks = MutableStateFlow<List<TorrentSnapshot>>(emptyList())
+    private val _pendingTasks = MutableStateFlow<List<TorrentSnapshot>>(emptyList())
+    private val pendingIdCounter = AtomicInteger(0)
 
     private val _tasks = MutableStateFlow<List<TorrentSnapshot>>(emptyList())
     val tasks: StateFlow<List<TorrentSnapshot>> = _tasks.asStateFlow()
@@ -106,12 +114,13 @@ class TorrentForegroundService : Service() {
                     totalDownBps: ULong,
                     totalUpBps: ULong
                 ) {
-                    _tasks.value = tasks
+                    _engineTasks.value = tasks
+                    syncVisibleTasks()
                     _totalDownBps.value = totalDownBps.toLong()
                     _totalUpBps.value = totalUpBps.toLong()
                     notificationManager.notify(
                         NOTIFICATION_ONGOING_ID,
-                        buildOngoingNotification(tasks, totalDownBps.toLong())
+                        buildOngoingNotification(_tasks.value, totalDownBps.toLong())
                     )
                 }
 
@@ -125,7 +134,8 @@ class TorrentForegroundService : Service() {
             })
 
             engine = created
-            _tasks.value = runCatching { created.listTasks() }.getOrDefault(emptyList())
+            _engineTasks.value = runCatching { created.listTasks() }.getOrDefault(emptyList())
+            syncVisibleTasks()
             _engineError.value = null
 
             val monitor = NetworkPolicyMonitor(this) { isWifi, isCharging ->
@@ -161,9 +171,63 @@ class TorrentForegroundService : Service() {
     }
 
     fun addMagnet(uri: String, onlyFiles: List<UInt>? = null, startPaused: Boolean = false) {
+        val trimmed = uri.trim()
+        if (!trimmed.startsWith("magnet:?", ignoreCase = true)) {
+            _engineError.value = "无效的磁力链接，必须以 magnet:? 开头"
+            return
+        }
+
+        val pendingId = (1_000_000_000 + pendingIdCounter.incrementAndGet()).toUInt()
+        val parsedHash = extractInfoHash(trimmed)
+        val parsedName = extractDisplayName(trimmed)
+            ?: if (parsedHash.isNotEmpty()) "正在解析磁力任务 (${parsedHash.take(8)}...)" else "正在解析磁力任务..."
+
+        val placeholder = TorrentSnapshot(
+            id = pendingId,
+            infoHash = parsedHash,
+            name = parsedName,
+            magnetUri = trimmed,
+            state = TaskState.RESOLVING,
+            totalBytes = 0uL,
+            downloadedBytes = 0uL,
+            uploadedBytes = 0uL,
+            downloadBps = 0uL,
+            uploadBps = 0uL,
+            activePeers = 0u,
+            etaSeconds = null,
+            downloadLimitKbps = 0u,
+            uploadLimitKbps = 0u,
+            files = emptyList(),
+            peers = emptyList(),
+            trackers = emptyList(),
+            errorMessage = null
+        )
+
+        _pendingTasks.update { listOf(placeholder) + it }
+        syncVisibleTasks()
+        notificationManager.notify(
+            NOTIFICATION_ONGOING_ID,
+            buildOngoingNotification(_tasks.value, _totalDownBps.value)
+        )
+
         serviceScope.launch {
-            runCatching { engine?.addMagnet(uri, onlyFiles, startPaused) }
-                .onFailure { _engineError.value = it.message ?: "Failed to add magnet" }
+            try {
+                var attempts = 0
+                while (engine == null && attempts < 20) {
+                    delay(150)
+                    attempts++
+                }
+                val eng = engine ?: throw IllegalStateException("下载引擎尚未初始化完成")
+                eng.addMagnet(trimmed, onlyFiles, startPaused)
+                _engineTasks.value = runCatching { eng.listTasks() }.getOrDefault(_engineTasks.value)
+            } catch (t: Throwable) {
+                val msg = t.message ?: "添加磁力链接失败"
+                _engineError.value = msg
+                notifyError(pendingId.toInt(), msg)
+            } finally {
+                _pendingTasks.update { list -> list.filterNot { it.id == pendingId } }
+                syncVisibleTasks()
+            }
         }
     }
 
@@ -196,10 +260,42 @@ class TorrentForegroundService : Service() {
     }
 
     fun removeTask(id: UInt, deleteFiles: Boolean = false) {
-        serviceScope.launch {
-            runCatching { engine?.removeTask(id, deleteFiles) }
-                .onFailure { _engineError.value = it.message }
+        if (_pendingTasks.value.any { it.id == id }) {
+            _pendingTasks.update { list -> list.filterNot { it.id == id } }
+            syncVisibleTasks()
+            return
         }
+        serviceScope.launch {
+            runCatching {
+                engine?.removeTask(id, deleteFiles)
+                engine?.let { _engineTasks.value = it.listTasks() }
+                syncVisibleTasks()
+            }.onFailure { _engineError.value = it.message }
+        }
+    }
+
+    @Synchronized
+    private fun syncVisibleTasks() {
+        val real = _engineTasks.value
+        val activePending = _pendingTasks.value.filter { pending ->
+            val matchedByUri = real.any { it.magnetUri.isNotEmpty() && it.magnetUri == pending.magnetUri }
+            val matchedByHash = pending.infoHash.isNotEmpty() &&
+                real.any { it.infoHash.contains(pending.infoHash, ignoreCase = true) }
+            !matchedByUri && !matchedByHash
+        }
+        _tasks.value = activePending + real
+    }
+
+    private fun extractInfoHash(uri: String): String {
+        val match = Regex("xt=urn:btih:([a-zA-Z0-9]+)", RegexOption.IGNORE_CASE).find(uri)
+        return match?.groupValues?.getOrNull(1)?.lowercase() ?: ""
+    }
+
+    private fun extractDisplayName(uri: String): String? {
+        val match = Regex("(?:^|[?&])dn=([^&]+)", RegexOption.IGNORE_CASE).find(uri) ?: return null
+        return runCatching {
+            URLDecoder.decode(match.groupValues[1], "UTF-8").trim().takeIf { it.isNotEmpty() }
+        }.getOrNull()
     }
 
     fun setTaskRateLimit(id: UInt, downloadKbps: UInt, uploadKbps: UInt) {

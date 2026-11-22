@@ -342,6 +342,7 @@ fun MagnetPulseScreen(
         AddMagnetBottomSheet(
             onDismiss = { showAddSheet = false },
             onSubmit = { uri, startPaused ->
+                filter = QueueFilter.ALL
                 onAddMagnet(uri, startPaused)
                 showAddSheet = false
             }
@@ -538,7 +539,11 @@ private fun TorrentRowCard(
                         color = stateColor
                     )
                     Text(
-                        text = " · ${formatBytes(task.downloadedBytes.toLong())} / ${formatBytes(task.totalBytes.toLong())}",
+                        text = if (task.state == TaskState.RESOLVING && task.totalBytes == 0uL) {
+                            " · 正在连接 DHT / Tracker 解析元数据..."
+                        } else {
+                            " · ${formatBytes(task.downloadedBytes.toLong())} / ${formatBytes(task.totalBytes.toLong())}"
+                        },
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         color = Color(0xFF9AA0AC)
@@ -559,15 +564,26 @@ private fun TorrentRowCard(
         }
 
         Spacer(modifier = Modifier.height(8.dp))
-        LinearProgressIndicator(
-            progress = { progress },
-            color = stateColor,
-            trackColor = Color(0xFF1E222E),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(RoundedCornerShape(999.dp))
-        )
+        if (task.state == TaskState.RESOLVING && task.totalBytes == 0uL) {
+            LinearProgressIndicator(
+                color = stateColor,
+                trackColor = Color(0xFF1E222E),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(999.dp))
+            )
+        } else {
+            LinearProgressIndicator(
+                progress = { progress },
+                color = stateColor,
+                trackColor = Color(0xFF1E222E),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(999.dp))
+            )
+        }
         Spacer(modifier = Modifier.height(8.dp))
 
         Row(
@@ -754,7 +770,7 @@ private fun AddMagnetBottomSheet(
                         onSubmit(trimmed, startPaused)
                     }
                 },
-                enabled = magnetInput.trim().startsWith("magnet:?"),
+                enabled = magnetInput.trim().startsWith("magnet:?", ignoreCase = true),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("解析并加入 librqbit 队列")
