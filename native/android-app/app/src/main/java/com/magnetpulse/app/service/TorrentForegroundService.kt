@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
+import android.os.Environment
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.magnetpulse.app.MainActivity
@@ -43,6 +44,32 @@ class TorrentForegroundService : Service() {
         const val ACTION_PAUSE_ALL = "com.magnetpulse.action.PAUSE_ALL"
         const val ACTION_RESUME_ALL = "com.magnetpulse.action.RESUME_ALL"
         const val ACTION_STOP_SERVICE = "com.magnetpulse.action.STOP"
+
+        /**
+         * 下载目录：Android 11+ 上有“所有文件访问权限”时，用公共 Download 目录下的
+         * MagnetPulse 文件夹（文件管理器里能找到）；没权限就回落到应用私有目录，
+         * 保证下载不断。权限变化后重启应用生效（引擎启动时只读一次目录）。
+         */
+        @Suppress("DEPRECATION")
+        fun resolveDownloadDir(context: Context): File {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                Environment.isExternalStorageManager()
+            ) {
+                val publicDir = File(
+                    Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS
+                    ),
+                    "MagnetPulse"
+                )
+                if (runCatching { publicDir.mkdirs() }.getOrDefault(false) ||
+                    publicDir.isDirectory
+                ) {
+                    return publicDir
+                }
+            }
+            val base = context.getExternalFilesDir(null) ?: context.filesDir
+            return File(base, "downloads").apply { mkdirs() }
+        }
     }
 
     inner class LocalBinder : Binder() {
@@ -98,8 +125,7 @@ class TorrentForegroundService : Service() {
 
     private fun initEngine() {
         try {
-            val baseDownloadDir = getExternalFilesDir(null) ?: filesDir
-            val downloadDir = File(baseDownloadDir, "downloads").apply { mkdirs() }
+            val downloadDir = resolveDownloadDir(this)
             val persistenceDir = File(filesDir, "librqbit_fastresume").apply { mkdirs() }
 
             val created = MagnetEngine(
