@@ -46,13 +46,17 @@ class TorrentForegroundService : Service() {
         const val ACTION_STOP_SERVICE = "com.magnetpulse.action.STOP"
 
         /**
-         * 下载目录：Android 11+ 上有“所有文件访问权限”时，用公共 Download 目录下的
-         * MagnetPulse 文件夹（文件管理器里能找到）；没权限就回落到应用私有目录，
-         * 保证下载不断。权限变化后重启应用生效（引擎启动时只读一次目录）。
+         * 下载目录：设置里选了“手机存储”且 Android 11+ 上有“所有文件访问权限”时，
+         * 用公共 Download 目录下的 MagnetPulse 文件夹（文件管理器里能找到）；
+         * 选了“应用私有目录”或没权限就回落到应用私有目录，保证下载不断。
+         * 权限变化或切换位置后重启应用生效（引擎启动时只读一次目录）。
          */
         @Suppress("DEPRECATION")
         fun resolveDownloadDir(context: Context): File {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            val prefs = context.getSharedPreferences("magnetpulse_prefs", Context.MODE_PRIVATE)
+            val wantPublic = prefs.getString("download_location", "public") != "private"
+            if (wantPublic &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
                 Environment.isExternalStorageManager()
             ) {
                 val publicDir = File(
@@ -407,6 +411,14 @@ class TorrentForegroundService : Service() {
             PendingIntent.FLAG_IMMUTABLE
         )
 
+        // 通知栏“退出”：回到 MainActivity，由它停掉服务并关闭应用。
+        val exitIntent = PendingIntent.getActivity(
+            this,
+            3,
+            Intent(this, MainActivity::class.java).setAction(MainActivity.ACTION_EXIT_APP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         val avgProgress = if (active.isNotEmpty()) {
             val sumDownloaded = active.sumOf { it.downloadedBytes.toLong() }
             val sumTotal = active.sumOf { it.totalBytes.toLong() }.coerceAtLeast(1L)
@@ -434,6 +446,7 @@ class TorrentForegroundService : Service() {
             .setProgress(100, avgProgress, active.isEmpty() && tasks.any { it.state == TaskState.RESOLVING })
             .addAction(0, "全部暂停", pauseIntent)
             .addAction(0, "全部继续", resumeIntent)
+            .addAction(0, "退出", exitIntent)
             .build()
     }
 
