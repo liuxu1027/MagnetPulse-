@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 公共下载目录：Download/MagnetPulse/ -->
+    <external-path name="download" path="Download/MagnetPulse/" />
+    <!-- 应用私有目录：Android/data/com.magnetpulse.app/files/downloads/ -->
+    <external-files-path name="private_downloads" path="downloads/" />
+    <!-- 兜底：内部存储 files/downloads/ -->
+    <files-path name="internal_downloads" path="downloads/" />
+</paths>
