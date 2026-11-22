@@ -46,15 +46,24 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Assemble Debug APK
+      - name: Decode release keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > native/android-app/app/release.keystore
+          test -f native/android-app/app/release.keystore || (echo "keystore missing - check Secrets" && exit 1)
+
+      - name: Assemble Release APK
         working-directory: native/android-app
-        run: gradle assembleDebug
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MagnetPulse-Android-Debug-APK
-          path: native/android-app/app/build/outputs/apk/debug/*.apk
+          name: MagnetPulse-Android-Release-APK
+          path: native/android-app/app/build/outputs/apk/release/*.apk
       - name: Upload Rust Prebuilt (.so & Kotlin Bindings)
         uses: actions/upload-artifact@v4
         with:
