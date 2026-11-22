@@ -1,5 +1,9 @@
 package com.magnetpulse.app.ui
 
+import android.content.Context
+import android.content.Intent
+import android.webkit.MimeTypeMap
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +30,7 @@ import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.ExitToApp
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -33,6 +38,7 @@ import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -49,6 +55,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -67,11 +74,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
+import java.io.File
 import uniffi.magnetpulse_core.EnginePolicy
 import uniffi.magnetpulse_core.TaskState
 import uniffi.magnetpulse_core.TorrentSnapshot
@@ -105,12 +115,21 @@ fun MagnetPulseScreen(
     onRemoveTask: (id: UInt, deleteFiles: Boolean) -> Unit = { _, _ -> },
     onUpdateOnlyFiles: (id: UInt, files: List<UInt>) -> Unit = { _, _ -> },
     onSetTaskRateLimit: (id: UInt, downKbps: UInt, upKbps: UInt) -> Unit = { _, _, _ -> },
-    onUpdatePolicy: (EnginePolicy) -> Unit = {}
+    onUpdatePolicy: (EnginePolicy) -> Unit = {},
+    downloadLocation: String = "public",
+    onDownloadLocationChange: (String) -> Unit = {},
+    hasAllFilesAccess: Boolean = false,
+    onOpenAllFilesAccess: () -> Unit = {},
+    downloadDir: String = "",
+    onExit: () -> Unit = {}
 ) {
     var activeTab by remember { mutableStateOf(MainTab.QUEUE) }
     var filter by remember { mutableStateOf(QueueFilter.ALL) }
     var showAddSheet by remember { mutableStateOf(false) }
     var selectedTaskId by remember { mutableStateOf<UInt?>(null) }
+    var showExitConfirm by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val hasActiveDownload = tasks.any { it.state == TaskState.DOWNLOADING }
 
     val selectedTask = remember(tasks, selectedTaskId) {
         selectedTaskId?.let { id -> tasks.find { it.id == id } }
@@ -183,6 +202,11 @@ fun MagnetPulseScreen(
                         IconButton(onClick = onResumeAll) {
                             Icon(Icons.Rounded.PlayArrow, contentDescription = "全部继续", tint = Color(0xFFA8C7FA))
                         }
+                    }
+                    IconButton(onClick = {
+                        if (hasActiveDownload) showExitConfirm = true else onExit()
+                    }) {
+                        Icon(Icons.Rounded.ExitToApp, contentDescription = "退出", tint = Color(0xFFC4C6D0))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -317,7 +341,22 @@ fun MagnetPulseScreen(
                         items(filteredTasks, key = { it.id.toInt() }) { task ->
                             TorrentRowCard(
                                 task = task,
-                                onCardClick = { selectedTaskId = task.id },
+                                onCardClick = {
+                                    if (task.state == TaskState.COMPLETED || task.state == TaskState.SEEDING) {
+                                        when (openDownloadedFile(context, File(downloadDir), task)) {
+                                            OpenFileResult.OPENED -> Unit
+                                            OpenFileResult.FILE_MISSING -> {
+                                                Toast.makeText(context, "文件不存在，可能已被删除", Toast.LENGTH_SHORT).show()
+                                                selectedTaskId = task.id
+                                            }
+                                            OpenFileResult.NO_APP -> {
+                                                Toast.makeText(context, "没有能打开这个文件的应用", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    } else {
+                                        selectedTaskId = task.id
+                                    }
+                                },
                                 onToggle = {
                                     if (task.state == TaskState.DOWNLOADING || task.state == TaskState.RESOLVING) {
                                         onPauseTask(task.id)
@@ -332,7 +371,12 @@ fun MagnetPulseScreen(
             } else {
                 PolicyCenterContent(
                     policy = policy,
-                    onUpdatePolicy = onUpdatePolicy
+                    onUpdatePolicy = onUpdatePolicy,
+                    downloadLocation = downloadLocation,
+                    onDownloadLocationChange = onDownloadLocationChange,
+                    hasAllFilesAccess = hasAllFilesAccess,
+                    onOpenAllFilesAccess = onOpenAllFilesAccess,
+                    downloadDir = downloadDir
                 )
             }
         }
@@ -365,6 +409,23 @@ fun MagnetPulseScreen(
             onRemove = { deleteFiles ->
                 onRemoveTask(selectedTask.id, deleteFiles)
                 selectedTaskId = null
+            }
+        )
+    }
+
+    if (showExitConfirm) {
+        AlertDialog(
+            onDismissRequest = { showExitConfirm = false },
+            title = { Text("退出 MagnetPulse") },
+            text = { Text("有下载正在进行，退出会停止这些下载，确定退出吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExitConfirm = false
+                    onExit()
+                }) { Text("退出") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitConfirm = false }) { Text("取消") }
             }
         )
     }
@@ -609,12 +670,114 @@ private fun TorrentRowCard(
 @Composable
 private fun PolicyCenterContent(
     policy: EnginePolicy,
-    onUpdatePolicy: (EnginePolicy) -> Unit
+    onUpdatePolicy: (EnginePolicy) -> Unit,
+    downloadLocation: String,
+    onDownloadLocationChange: (String) -> Unit,
+    hasAllFilesAccess: Boolean,
+    onOpenAllFilesAccess: () -> Unit,
+    downloadDir: String
 ) {
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFF171A23))
+                    .border(1.dp, Color(0xFF282D3B), RoundedCornerShape(16.dp))
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = "下载目录",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color(0xFFE3E2E6)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = downloadDir,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF9AA0AC)
+                )
+            }
+        }
+
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFF171A23))
+                    .border(1.dp, Color(0xFF282D3B), RoundedCornerShape(16.dp))
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = "下载位置",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color(0xFFE3E2E6)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    RadioButton(
+                        selected = downloadLocation == "public",
+                        onClick = { onDownloadLocationChange("public") }
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "手机存储 Download/MagnetPulse",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFE3E2E6)
+                        )
+                        Text(
+                            "文件管理器直接能找到；需要所有文件访问权限",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF9AA0AC)
+                        )
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    RadioButton(
+                        selected = downloadLocation == "private",
+                        onClick = { onDownloadLocationChange("private") }
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "应用私有目录",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFE3E2E6)
+                        )
+                        Text(
+                            "不需要权限，但文件管理器看不到",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF9AA0AC)
+                        )
+                    }
+                }
+                if (downloadLocation == "public" && !hasAllFilesAccess) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "还没开启所有文件访问权限，现在下载会先存在应用私有目录。这个权限在“设置 - 应用 - 特殊应用权限 - 所有文件访问权限”里，不在应用详情的常规权限列表里，所以那边看着是灰的。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF9AA0AC)
+                    )
+                    TextButton(onClick = onOpenAllFilesAccess) { Text("去开启权限") }
+                }
+                Text(
+                    "切换后重启应用生效",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF9AA0AC)
+                )
+            }
+        }
+
         item {
             Column(
                 modifier = Modifier
@@ -794,6 +957,7 @@ private fun TaskInspectorBottomSheet(
         mutableStateOf(task.files.filter { it.selected }.map { it.index }.toSet())
     }
     var downLimitKbps by remember(task.id) { mutableIntStateOf(task.downloadLimitKbps.toInt()) }
+    var showRemoveDialog by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -836,7 +1000,7 @@ private fun TaskInspectorBottomSheet(
                     )
                 }
                 OutlinedButton(
-                    onClick = { onRemove(false) },
+                    onClick = { showRemoveDialog = true },
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
                     modifier = Modifier.weight(1f)
                 ) {
@@ -844,6 +1008,31 @@ private fun TaskInspectorBottomSheet(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("移除任务")
                 }
+            }
+
+            if (showRemoveDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRemoveDialog = false },
+                    title = { Text("移除任务") },
+                    text = { Text("“${task.name}”要怎么处理？") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showRemoveDialog = false
+                            onRemove(true)
+                        }) {
+                            Text("从存储删除", color = Color(0xFFEF4444))
+                        }
+                    },
+                    dismissButton = {
+                        Row {
+                            TextButton(onClick = {
+                                showRemoveDialog = false
+                                onRemove(false)
+                            }) { Text("仅从列表删除") }
+                            TextButton(onClick = { showRemoveDialog = false }) { Text("取消") }
+                        }
+                    }
+                )
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -970,5 +1159,40 @@ private fun formatEta(seconds: Long): String {
         h > 0 -> "${h}h${m}m"
         m > 0 -> "${m}m${s}s"
         else -> "${s}s"
+    }
+}
+
+private enum class OpenFileResult {
+    OPENED, FILE_MISSING, NO_APP
+}
+
+/**
+ * 打开已完成任务的下载文件：取其中已下完的最大一个文件，用系统应用打开。
+ * 多文件种子默认打开最大的那个文件；文件不存在或没有应用能打开时返回对应原因。
+ */
+private fun openDownloadedFile(
+    context: Context,
+    downloadDir: File,
+    task: TorrentSnapshot
+): OpenFileResult {
+    val file = task.files
+        .filter { it.length > 0uL && it.downloadedBytes >= it.length }
+        .maxByOrNull { it.length } ?: return OpenFileResult.FILE_MISSING
+    val target = File(downloadDir, file.path)
+    if (!target.exists()) return OpenFileResult.FILE_MISSING
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target)
+    }.getOrNull() ?: return OpenFileResult.FILE_MISSING
+    val mime = MimeTypeMap.getSingleton()
+        .getMimeTypeFromExtension(target.extension.lowercase()) ?: "*/*"
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mime)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return try {
+        context.startActivity(Intent.createChooser(intent, "打开文件"))
+        OpenFileResult.OPENED
+    } catch (e: Exception) {
+        OpenFileResult.NO_APP
     }
 }
