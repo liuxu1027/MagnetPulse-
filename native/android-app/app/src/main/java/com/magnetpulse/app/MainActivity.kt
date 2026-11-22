@@ -6,12 +6,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.IBinder
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +32,12 @@ import uniffi.magnetpulse_core.EnginePolicy
 class MainActivity : ComponentActivity() {
 
     private var boundService by mutableStateOf<TorrentForegroundService?>(null)
+    private var showStoragePermissionDialog by mutableStateOf(false)
+
+    companion object {
+        private const val PREFS_NAME = "magnetpulse_prefs"
+        private const val KEY_STORAGE_PROMPT_DISMISSED = "storage_permission_prompt_dismissed"
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -46,6 +58,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNotificationPermissionIfNeeded()
+        showStoragePermissionDialog = shouldShowStoragePermissionDialog()
 
         val serviceIntent = Intent(this, TorrentForegroundService::class.java)
         ContextCompat.startForegroundService(this, serviceIntent)
@@ -85,6 +98,32 @@ class MainActivity : ComponentActivity() {
                     onSetTaskRateLimit = { id, downKbps, upKbps -> svc?.setTaskRateLimit(id, downKbps, upKbps) },
                     onUpdatePolicy = { updated -> svc?.updatePolicy(updated) }
                 )
+
+                if (showStoragePermissionDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showStoragePermissionDialog = false },
+                        title = { Text("下载保存到能找到的地方") },
+                        text = {
+                            Text(
+                                "现在下载的文件保存在应用私有目录，文件管理器里看不到。" +
+                                    "去设置里开启“所有文件访问权限”后，下载会保存到手机 Download " +
+                                    "文件夹下的 MagnetPulse 文件夹，文件管理器里就能找到。" +
+                                    "开启后重启应用生效。"
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showStoragePermissionDialog = false
+                                openAllFilesAccessSettings()
+                            }) { Text("去开启") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { dismissStoragePermissionDialogPermanently() }) {
+                                Text("以后再说")
+                            }
+                        }
+                    )
+                }
             }
         }
     }
@@ -116,5 +155,30 @@ class MainActivity : ComponentActivity() {
                 permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+    }
+
+    /** 没开“所有文件访问权限”且用户没点过“以后再说”时，启动弹一次授权提示。 */
+    private fun shouldShowStoragePermissionDialog(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        if (Environment.isExternalStorageManager()) return false
+        return !getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_STORAGE_PROMPT_DISMISSED, false)
+    }
+
+    private fun dismissStoragePermissionDialogPermanently() {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_STORAGE_PROMPT_DISMISSED, true)
+            .apply()
+        showStoragePermissionDialog = false
+    }
+
+    private fun openAllFilesAccessSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val intent = Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse("package:$packageName")
+        )
+        startActivity(intent)
     }
 }
