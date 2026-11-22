@@ -33,10 +33,15 @@ class MainActivity : ComponentActivity() {
 
     private var boundService by mutableStateOf<TorrentForegroundService?>(null)
     private var showStoragePermissionDialog by mutableStateOf(false)
+    private var downloadLocation by mutableStateOf("public")
 
     companion object {
         private const val PREFS_NAME = "magnetpulse_prefs"
         private const val KEY_STORAGE_PROMPT_DISMISSED = "storage_permission_prompt_dismissed"
+        private const val KEY_DOWNLOAD_LOCATION = "download_location"
+
+        /** 通知栏“退出”操作用的 action：回到 MainActivity 后停服务、关应用。 */
+        const val ACTION_EXIT_APP = "com.magnetpulse.action.EXIT_APP"
     }
 
     private val connection = object : ServiceConnection {
@@ -57,7 +62,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 从通知栏点“退出”进来：停掉下载服务、关闭应用，不再往下走。
+        if (intent?.action == ACTION_EXIT_APP) {
+            exitApp()
+            return
+        }
         requestNotificationPermissionIfNeeded()
+        downloadLocation = readDownloadLocation()
         showStoragePermissionDialog = shouldShowStoragePermissionDialog()
 
         val serviceIntent = Intent(this, TorrentForegroundService::class.java)
@@ -88,6 +99,12 @@ class MainActivity : ComponentActivity() {
                     totalUpBps = totalUp,
                     policy = policy,
                     engineError = engineError,
+                    downloadLocation = downloadLocation,
+                    onDownloadLocationChange = { updateDownloadLocation(it) },
+                    hasAllFilesAccess = hasAllFilesAccess(),
+                    onOpenAllFilesAccess = { openAllFilesAccessSettings() },
+                    downloadDir = TorrentForegroundService.resolveDownloadDir(this).absolutePath,
+                    onExit = { exitApp() },
                     onAddMagnet = { uri, startPaused -> svc?.addMagnet(uri, null, startPaused) },
                     onPauseTask = { id -> svc?.pauseTask(id) },
                     onResumeTask = { id -> svc?.resumeTask(id) },
@@ -130,6 +147,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.action == ACTION_EXIT_APP) {
+            exitApp()
+            return
+        }
         handleIncomingMagnetIntent(intent)
     }
 
@@ -180,5 +201,35 @@ class MainActivity : ComponentActivity() {
             Uri.parse("package:$packageName")
         )
         startActivity(intent)
+    }
+
+    /** 下载位置选择：public = 手机存储 Download/MagnetPulse，private = 应用私有目录。 */
+    private fun readDownloadLocation(): String {
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_DOWNLOAD_LOCATION, "public") ?: "public"
+    }
+
+    private fun updateDownloadLocation(value: String) {
+        val v = if (value == "private") "private" else "public"
+        downloadLocation = v
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_DOWNLOAD_LOCATION, v)
+            .apply()
+    }
+
+    /** 是否有“所有文件访问权限”（Android 11+）。 */
+    private fun hasAllFilesAccess(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()
+    }
+
+    /** 彻底退出：停掉下载服务、去掉通知栏，界面随后关闭。 */
+    private fun exitApp() {
+        val stopIntent = Intent(this, TorrentForegroundService::class.java).apply {
+            action = TorrentForegroundService.ACTION_STOP_SERVICE
+        }
+        startService(stopIntent)
+        finish()
     }
 }
