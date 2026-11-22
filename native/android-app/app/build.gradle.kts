@@ -37,7 +37,7 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
-            isMinifyEnabled = true
+            isMinifyEnabled = false // JNA/UniFFI: R8 会把 com.sun.jna.Pointer 的 peer 字段混淆掉，引擎起不来
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
